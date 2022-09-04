@@ -73,7 +73,7 @@ public class PixivParser extends BaseImageListParser {
             else if (onlineContent.getUrl().contains("users/"))
                 return parseUser(onlineContent, storedContent, cookieStr);
         } catch (Exception e) {
-            Timber.d(e);
+            Timber.e(e);
             throw new EmptyResultException(StringHelper.protect(e.getMessage()));
         }
         return Collections.emptyList();
