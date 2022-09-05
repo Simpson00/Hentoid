@@ -8,11 +8,14 @@ import androidx.annotation.Nullable;
 import com.annimon.stream.Stream;
 
 import org.greenrobot.eventbus.EventBus;
+import org.threeten.bp.Instant;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Queue;
 import java.util.Set;
 
 import me.devsaki.hentoid.database.domains.Attribute;
@@ -28,6 +31,7 @@ import me.devsaki.hentoid.json.sources.PixivUserIllustMetadata;
 import me.devsaki.hentoid.parsers.ParseHelper;
 import me.devsaki.hentoid.retrofit.sources.PixivServer;
 import me.devsaki.hentoid.util.ContentHelper;
+import me.devsaki.hentoid.util.Helper;
 import me.devsaki.hentoid.util.StringHelper;
 import me.devsaki.hentoid.util.exception.EmptyResultException;
 import me.devsaki.hentoid.util.exception.PreparationInterruptedException;
@@ -37,6 +41,7 @@ import timber.log.Timber;
 public class PixivParser extends BaseImageListParser {
 
     private static final int MAX_QUERY_WINDOW = 30;
+    private static final int REQUESTS_PER_SECOND = 2;
 
     @Override
     protected List<ImageFile> parseImageListImpl(@NonNull Content onlineContent, @Nullable Content storedContent) throws Exception {
@@ -208,8 +213,17 @@ public class PixivParser extends BaseImageListParser {
         List<ImageFile> result = new ArrayList<>();
         result.add(ImageFile.newCover(onlineContent.getCoverImageUrl(), StatusContent.SAVED));
         Set<Attribute> attrs = new HashSet<>();
+        // Artificially cap to REQUESTS_PER_SECOND illusts per second to prevent Pixiv from blocking the app
+        Queue<Long> previousRequestsTimestamps = new LinkedList<>();
         for (String illustId : illustIds) {
             if (processHalted.get()) break;
+            long now = Instant.now().toEpochMilli();
+            if (!isNewRequestAllowed(previousRequestsTimestamps, now)) {
+                Helper.pause((int) Math.round(1000.0 / REQUESTS_PER_SECOND));
+                now = Instant.now().toEpochMilli();
+            }
+            previousRequestsTimestamps.add(now);
+
             PixivIllustMetadata illustMetadata = PixivServer.api.getIllustMetadata(illustId, cookieStr).execute().body();
             if (null == illustMetadata || illustMetadata.isError()) {
                 String message = "Unreachable illust";
@@ -237,6 +251,22 @@ public class PixivParser extends BaseImageListParser {
         onlineContent.putAttributes(attrs);
         onlineContent.setUpdatedProperties(true);
         return result;
+    }
+
+    private boolean isNewRequestAllowed(Queue<Long> previousRequestsTimestamps, long now) {
+        boolean polled;
+        do {
+            polled = false;
+            Long earliestRequestTimestamp = previousRequestsTimestamps.peek();
+            if (null == earliestRequestTimestamp) break; // Empty collection
+            if (now - earliestRequestTimestamp > 1000) {
+                previousRequestsTimestamps.poll();
+                polled = true;
+            }
+        } while (polled);
+
+        int nbRequestsLastSecond = previousRequestsTimestamps.size();
+        return nbRequestsLastSecond < REQUESTS_PER_SECOND;
     }
 
     @Override
